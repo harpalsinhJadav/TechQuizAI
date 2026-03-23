@@ -1,29 +1,28 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js";
 
-const supabase = createClient(
-  Deno.env.get("PROJECT_URL")!,
-  Deno.env.get("SERVICE_ROLE_KEY")!
-);
-
+// ---------------- ENV ---------------- //
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
 const PRIMARY_MODEL = "models/gemini-3.1-flash-lite-preview";
 const FALLBACK_MODEL = "models/gemini-2.0-flash-lite-001";
 
+// Supabase
+const supabase = createClient(
+  Deno.env.get("PROJECT_URL")!,
+  Deno.env.get("SERVICE_ROLE_KEY")!
+);
+
 // ---------------- MAIN HANDLER ---------------- //
 
 serve(async (req) => {
   try {
-    // ✅ Handle CORS
+    // CORS
     if (req.method === "OPTIONS") {
-      return new Response("ok", {
-        headers: corsHeaders()
-      });
+      return new Response("ok", { headers: corsHeaders() });
     }
 
-    // ✅ Validate API Key
     if (!GEMINI_API_KEY) {
       return jsonResponse({ error: "Missing GEMINI_API_KEY" }, 500);
     }
@@ -40,10 +39,22 @@ serve(async (req) => {
     // 1️⃣ Chunking
     const chunks = chunkText(text);
 
-    // 2️⃣ Context (basic for now, RAG will improve this)
-    const context = chunks.slice(0, 5).join("\n");
+    // 2️⃣ Save document
+    const { data: doc, error: docError } = await supabase
+      .from("documents")
+      .insert({ content: text })
+      .select()
+      .single();
 
-    // 3️⃣ Generate Quiz
+    if (docError) throw docError;
+
+    // 3️⃣ Store chunks with embeddings
+    await storeChunks(doc.id, chunks);
+
+    // 4️⃣ Retrieve relevant context (RAG)
+    const context = await getRelevantChunks(text);
+
+    // 5️⃣ Generate quiz
     const quiz = await generateQuiz(context);
 
     return jsonResponse({
@@ -95,21 +106,8 @@ function chunkText(text: string) {
   return chunks;
 }
 
-// ----------- Store Chunks -------------//
-async function storeChunks(documentId: string, chunks: string[]) {
-  for (const chunk of chunks) {
-    const embedding = await getEmbedding(chunk);
+// ---------------- EMBEDDING ---------------- //
 
-    await supabase.from("chunks").insert({
-      document_id: documentId,
-      content: chunk,
-      embedding
-    });
-  }
-}
-
-
-// -------------- Embedding ----------------- //
 async function getEmbedding(text: string) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${GEMINI_API_KEY}`;
 
@@ -134,12 +132,41 @@ async function getEmbedding(text: string) {
   return data?.embedding?.values;
 }
 
+// ---------------- STORE CHUNKS ---------------- //
+
+async function storeChunks(documentId: string, chunks: string[]) {
+  for (const chunk of chunks) {
+    const embedding = await getEmbedding(chunk);
+
+    await supabase.from("chunks").insert({
+      document_id: documentId,
+      content: chunk,
+      embedding
+    });
+  }
+}
+
+// ---------------- RETRIEVAL ---------------- //
+
+async function getRelevantChunks(query: string, k = 5) {
+  const embedding = await getEmbedding(query);
+
+  const { data, error } = await supabase.rpc("match_chunks", {
+    query_embedding: embedding,
+    match_count: k
+  });
+
+  if (error) throw error;
+
+  return data.map((item: any) => item.content).join("\n");
+}
+
 // ---------------- QUIZ GENERATION ---------------- //
 
 async function generateQuiz(context: string) {
   try {
     return await tryGenerate(context, PRIMARY_MODEL);
-  } catch (err) {
+  } catch {
     console.log("⚠️ Primary model failed, switching to fallback");
     return await tryGenerate(context, FALLBACK_MODEL);
   }
@@ -149,15 +176,15 @@ async function tryGenerate(context: string, model: string) {
   const prompt = `
 You are TechQuizAI.
 
-Generate 5 multiple-choice questions (MCQs) from the content below.
+Generate 5 MCQs from the content below.
 
 ${context}
 
 Rules:
-- 4 options per question
-- Only 1 correct answer
+- 4 options
+- 1 correct answer
 - Medium difficulty
-- Return ONLY valid JSON (no extra text)
+- Return ONLY JSON
 
 Format:
 [
@@ -208,16 +235,13 @@ Format:
   try {
     return JSON.parse(text);
   } catch {
-    // 🔥 Handle messy LLM output
     const start = text.indexOf("[");
     const end = text.lastIndexOf("]");
 
     if (start === -1 || end === -1) {
-      console.log("❌ Invalid response:", text);
-      throw new Error("Invalid JSON format from Gemini");
+      throw new Error("Invalid JSON format");
     }
 
-    const cleanJson = text.slice(start, end + 1);
-    return JSON.parse(cleanJson);
+    return JSON.parse(text.slice(start, end + 1));
   }
 }
