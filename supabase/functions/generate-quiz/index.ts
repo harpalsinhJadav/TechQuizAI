@@ -5,8 +5,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
+// 🔥 Use ONLY primary model (no fallback for debugging)
 const PRIMARY_MODEL = "models/gemini-3.1-flash-lite-preview";
-const FALLBACK_MODEL = "models/gemini-2.0-flash-lite-001";
+const EMBEDDING_MODEL = "models/gemini-embedding-001";
 
 // Supabase
 const supabase = createClient(
@@ -51,13 +52,13 @@ serve(async (req) => {
     // 3️⃣ Store chunks with embeddings
     await storeChunks(doc.id, chunks);
 
-    // 4️⃣ Retrieve relevant context (RAG)
+    // 4️⃣ Retrieve relevant context
     const context = await getRelevantChunks(text);
 
     // 5️⃣ Generate quiz
     const quiz = await generateQuiz(context);
 
-    // Save quiz
+    // 6️⃣ Save quiz
     const quizId = await saveQuiz(doc.id, quiz);
 
     return jsonResponse({
@@ -68,7 +69,7 @@ serve(async (req) => {
     });
 
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error("❌ ERROR:", err);
     return jsonResponse(
       { error: err.message || "Internal Server Error" },
       500
@@ -76,7 +77,7 @@ serve(async (req) => {
   }
 });
 
-// ---------------- RESPONSE HELPERS ---------------- //
+// ---------------- HELPERS ---------------- //
 
 function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -93,6 +94,38 @@ function corsHeaders() {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "*"
   };
+}
+
+function extractJSON(text: string) {
+  // Remove markdown ```json ``` if present
+  text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(text);
+  } catch { }
+
+  // Extract array JSON
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+
+  if (start !== -1 && end !== -1) {
+    const json = text.slice(start, end + 1);
+    return JSON.parse(json);
+  }
+
+  // Extract object JSON (fallback)
+  const objStart = text.indexOf("{");
+  const objEnd = text.lastIndexOf("}");
+
+  if (objStart !== -1 && objEnd !== -1) {
+    const json = text.slice(objStart, objEnd + 1);
+    return JSON.parse(json);
+  }
+
+  console.log("❌ RAW MODEL OUTPUT:", text);
+
+  throw new Error("Invalid JSON format");
 }
 
 // ---------------- CHUNKING ---------------- //
@@ -113,7 +146,7 @@ function chunkText(text: string) {
 // ---------------- EMBEDDING ---------------- //
 
 async function getEmbedding(text: string) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/${EMBEDDING_MODEL}:embedContent?key=${GEMINI_API_KEY}`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -129,11 +162,19 @@ async function getEmbedding(text: string) {
 
   const data = await res.json();
 
+  console.log("EMBEDDING RESPONSE:", JSON.stringify(data));
+
   if (!res.ok) {
     throw new Error(data?.error?.message || "Embedding failed");
   }
 
-  return data?.embedding?.values;
+  const vector = data?.embedding?.values;
+
+  if (!vector) {
+    throw new Error("No embedding returned");
+  }
+
+  return vector;
 }
 
 // ---------------- STORE CHUNKS ---------------- //
@@ -168,12 +209,7 @@ async function getRelevantChunks(query: string, k = 5) {
 // ---------------- QUIZ GENERATION ---------------- //
 
 async function generateQuiz(context: string) {
-  try {
-    return await tryGenerate(context, PRIMARY_MODEL);
-  } catch {
-    console.log("⚠️ Primary model failed, switching to fallback");
-    return await tryGenerate(context, FALLBACK_MODEL);
-  }
+  return await tryGenerate(context, PRIMARY_MODEL);
 }
 
 async function tryGenerate(context: string, model: string) {
@@ -215,17 +251,19 @@ Format:
         }
       ],
       generationConfig: {
-        temperature: 0.6,
-        maxOutputTokens: 2048
+        temperature: 0.4,
+        maxOutputTokens: 2048,
+        responseMimeType: "application/json"
       }
     })
   });
 
   const data = await res.json();
 
-  console.log(`MODEL (${model}) RESPONSE:`, JSON.stringify(data));
+  console.log("🔥 PRIMARY MODEL RESPONSE:", JSON.stringify(data));
 
   if (!res.ok) {
+    console.log("❌ PRIMARY MODEL ERROR:", JSON.stringify(data));
     throw new Error(data?.error?.message || "Gemini API failed");
   }
 
@@ -237,23 +275,25 @@ Format:
   }
 
   try {
-    return JSON.parse(text);
+    // return JSON.parse(text);
+    return extractJSON(text);
   } catch {
     const start = text.indexOf("[");
     const end = text.lastIndexOf("]");
 
     if (start === -1 || end === -1) {
+      console.log("❌ RAW TEXT:", text);
       throw new Error("Invalid JSON format");
     }
 
-    return JSON.parse(text.slice(start, end + 1));
+    // return JSON.parse(text.slice(start, end + 1));
+    return extractJSON(text.slice(start, end + 1));
   }
 }
 
+// ---------------- SAVE QUIZ ---------------- //
 
-// ------------ Save Quiz -------------------//
 async function saveQuiz(documentId: string, quiz: any[]) {
-  // 1. Create quiz
   const { data: quizRow, error: quizError } = await supabase
     .from("quizzes")
     .insert({ document_id: documentId })
@@ -262,7 +302,6 @@ async function saveQuiz(documentId: string, quiz: any[]) {
 
   if (quizError) throw quizError;
 
-  // 2. Prepare questions
   const questions = quiz.map((q) => ({
     quiz_id: quizRow.id,
     question: q.question,
@@ -271,7 +310,6 @@ async function saveQuiz(documentId: string, quiz: any[]) {
     explanation: q.explanation
   }));
 
-  // 3. Insert questions
   const { error: questionError } = await supabase
     .from("questions")
     .insert(questions);

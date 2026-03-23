@@ -27,13 +27,14 @@ serve(async () => {
     // ✅ Filter only usable models
     const models = (data.models || [])
       .filter((m: any) =>
-        m.supportedGenerationMethods?.includes("generateContent")
+        m.supportedGenerationMethods?.includes("generateContent") ||
+        m.supportedGenerationMethods?.includes("embedContent")
       )
       .map((m: any) => ({
         name: m.name,
-        displayName: m.displayName
+        displayName: m.displayName,
+        methods: m.supportedGenerationMethods
       }));
-
     return new Response(JSON.stringify({ models }), {
       headers: { "Content-Type": "application/json" }
     });
