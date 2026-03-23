@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-const GROK_API = "https://api.x.ai/v1";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
 
 // ---------------- MAIN HANDLER ---------------- //
 
@@ -69,19 +70,18 @@ function chunkText(text: string) {
 
 async function generateQuiz(context: string) {
   const prompt = `
-You are TechQuizAI, an AI quiz generator.
+You are TechQuizAI.
 
-Return ONLY valid JSON.
-Do NOT include any text before or after JSON.
+Generate 5 multiple-choice questions (MCQs) from the content below.
 
-Generate 5 MCQs from the content below:
-
+Content:
 ${context}
 
 Rules:
 - 4 options per question
 - Only 1 correct answer
 - Medium difficulty
+- Return ONLY valid JSON
 
 Format:
 [
@@ -94,52 +94,44 @@ Format:
 ]
 `;
 
-  const res = await fetch(`${GROK_API}/chat/completions`, {
+  const res = await fetch(GEMINI_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${Deno.env.get("GROK_API_KEY")}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "grok-3",
-      messages: [{ role: "user", content: prompt }]
+      contents: [
+        {
+          parts: [{ text: prompt }]
+        }
+      ]
     })
   });
 
   const data = await res.json();
 
-  // 🔍 Log full response (VERY IMPORTANT for debugging)
-  console.log("GROK RAW RESPONSE:", JSON.stringify(data));
+  console.log("GEMINI RAW RESPONSE:", JSON.stringify(data));
 
-  const text = data?.choices?.[0]?.message?.content?.trim();
+  const text =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
   if (!text) {
-    throw new Error("Grok returned empty response");
+    throw new Error("Gemini returned empty response");
   }
 
   try {
-    // ✅ Direct parse attempt
     return JSON.parse(text);
+  } catch {
+    console.log("⚠️ Cleaning Gemini response...");
 
-  } catch (err) {
-    console.log("⚠️ Invalid JSON, attempting cleanup...");
-
-    // 🧠 Extract JSON safely
     const jsonStart = text.indexOf("[");
     const jsonEnd = text.lastIndexOf("]");
 
     if (jsonStart === -1 || jsonEnd === -1) {
-      console.log("❌ No JSON found in response:", text);
-      throw new Error("No valid JSON found in Grok response");
+      throw new Error("No valid JSON found in Gemini response");
     }
 
     const cleanJson = text.slice(jsonStart, jsonEnd + 1);
-
-    try {
-      return JSON.parse(cleanJson);
-    } catch (err2) {
-      console.log("❌ Failed to parse cleaned JSON:", cleanJson);
-      throw new Error("Failed to parse quiz JSON after cleanup");
-    }
+    return JSON.parse(cleanJson);
   }
 }
