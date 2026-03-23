@@ -39,7 +39,11 @@ serve(async (req) => {
     // 3️⃣ Generate Quiz
     const quiz = await generateQuiz(context);
 
-    return jsonResponse({ quiz });
+    return jsonResponse({
+      success: true,
+      total: quiz.length,
+      data: quiz
+    });
 
   } catch (err) {
     console.error("ERROR:", err);
@@ -82,6 +86,31 @@ function chunkText(text: string) {
   }
 
   return chunks;
+}
+
+// -------------- Embedding ----------------- //
+async function getEmbedding(text: string) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${GEMINI_API_KEY}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      content: {
+        parts: [{ text }]
+      }
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data?.error?.message || "Embedding failed");
+  }
+
+  return data?.embedding?.values;
 }
 
 // ---------------- QUIZ GENERATION ---------------- //
