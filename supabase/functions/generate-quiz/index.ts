@@ -1,4 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js";
+
+const supabase = createClient(
+  Deno.env.get("PROJECT_URL")!,
+  Deno.env.get("SERVICE_ROLE_KEY")!
+);
+
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
@@ -87,6 +94,20 @@ function chunkText(text: string) {
 
   return chunks;
 }
+
+// ----------- Store Chunks -------------//
+async function storeChunks(documentId: string, chunks: string[]) {
+  for (const chunk of chunks) {
+    const embedding = await getEmbedding(chunk);
+
+    await supabase.from("chunks").insert({
+      document_id: documentId,
+      content: chunk,
+      embedding
+    });
+  }
+}
+
 
 // -------------- Embedding ----------------- //
 async function getEmbedding(text: string) {
