@@ -1,15 +1,24 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
+
+const PRIMARY_MODEL = "models/gemini-3.1-flash-lite-preview";
+const FALLBACK_MODEL = "models/gemini-2.0-flash-lite-001";
 
 // ---------------- MAIN HANDLER ---------------- //
 
 serve(async (req) => {
   try {
-    // Handle CORS (important for frontend later)
+    // ✅ Handle CORS
     if (req.method === "OPTIONS") {
-      return new Response("ok");
+      return new Response("ok", {
+        headers: corsHeaders()
+      });
+    }
+
+    // ✅ Validate API Key
+    if (!GEMINI_API_KEY) {
+      return jsonResponse({ error: "Missing GEMINI_API_KEY" }, 500);
     }
 
     const body = await req.json();
@@ -24,7 +33,7 @@ serve(async (req) => {
     // 1️⃣ Chunking
     const chunks = chunkText(text);
 
-    // 2️⃣ Context (basic for now, will upgrade in RAG step)
+    // 2️⃣ Context (basic for now, RAG will improve this)
     const context = chunks.slice(0, 5).join("\n");
 
     // 3️⃣ Generate Quiz
@@ -34,21 +43,30 @@ serve(async (req) => {
 
   } catch (err) {
     console.error("ERROR:", err);
-    return jsonResponse({ error: err.message || "Internal Server Error" }, 500);
+    return jsonResponse(
+      { error: err.message || "Internal Server Error" },
+      500
+    );
   }
 });
 
-// ---------------- RESPONSE HELPER ---------------- //
+// ---------------- RESPONSE HELPERS ---------------- //
 
 function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "*"
+      ...corsHeaders(),
+      "Content-Type": "application/json"
     }
   });
+}
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*"
+  };
 }
 
 // ---------------- CHUNKING ---------------- //
@@ -66,22 +84,30 @@ function chunkText(text: string) {
   return chunks;
 }
 
-// ---------------- GROK QUIZ GENERATION ---------------- //
+// ---------------- QUIZ GENERATION ---------------- //
 
 async function generateQuiz(context: string) {
+  try {
+    return await tryGenerate(context, PRIMARY_MODEL);
+  } catch (err) {
+    console.log("⚠️ Primary model failed, switching to fallback");
+    return await tryGenerate(context, FALLBACK_MODEL);
+  }
+}
+
+async function tryGenerate(context: string, model: string) {
   const prompt = `
 You are TechQuizAI.
 
 Generate 5 multiple-choice questions (MCQs) from the content below.
 
-Content:
 ${context}
 
 Rules:
 - 4 options per question
 - Only 1 correct answer
 - Medium difficulty
-- Return ONLY valid JSON
+- Return ONLY valid JSON (no extra text)
 
 Format:
 [
@@ -94,7 +120,9 @@ Format:
 ]
 `;
 
-  const res = await fetch(GEMINI_URL, {
+  const url = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${GEMINI_API_KEY}`;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -104,34 +132,42 @@ Format:
         {
           parts: [{ text: prompt }]
         }
-      ]
+      ],
+      generationConfig: {
+        temperature: 0.6,
+        maxOutputTokens: 2048
+      }
     })
   });
 
   const data = await res.json();
 
-  console.log("GEMINI RAW RESPONSE:", JSON.stringify(data));
+  console.log(`MODEL (${model}) RESPONSE:`, JSON.stringify(data));
+
+  if (!res.ok) {
+    throw new Error(data?.error?.message || "Gemini API failed");
+  }
 
   const text =
     data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
   if (!text) {
-    throw new Error("Gemini returned empty response");
+    throw new Error("Empty response from Gemini");
   }
 
   try {
     return JSON.parse(text);
   } catch {
-    console.log("⚠️ Cleaning Gemini response...");
+    // 🔥 Handle messy LLM output
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
 
-    const jsonStart = text.indexOf("[");
-    const jsonEnd = text.lastIndexOf("]");
-
-    if (jsonStart === -1 || jsonEnd === -1) {
-      throw new Error("No valid JSON found in Gemini response");
+    if (start === -1 || end === -1) {
+      console.log("❌ Invalid response:", text);
+      throw new Error("Invalid JSON format from Gemini");
     }
 
-    const cleanJson = text.slice(jsonStart, jsonEnd + 1);
+    const cleanJson = text.slice(start, end + 1);
     return JSON.parse(cleanJson);
   }
 }
