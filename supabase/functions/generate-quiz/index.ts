@@ -57,8 +57,12 @@ serve(async (req) => {
     // 5️⃣ Generate quiz
     const quiz = await generateQuiz(context);
 
+    // Save quiz
+    const quizId = await saveQuiz(doc.id, quiz);
+
     return jsonResponse({
       success: true,
+      quizId,
       total: quiz.length,
       data: quiz
     });
@@ -244,4 +248,35 @@ Format:
 
     return JSON.parse(text.slice(start, end + 1));
   }
+}
+
+
+// ------------ Save Quiz -------------------//
+async function saveQuiz(documentId: string, quiz: any[]) {
+  // 1. Create quiz
+  const { data: quizRow, error: quizError } = await supabase
+    .from("quizzes")
+    .insert({ document_id: documentId })
+    .select()
+    .single();
+
+  if (quizError) throw quizError;
+
+  // 2. Prepare questions
+  const questions = quiz.map((q) => ({
+    quiz_id: quizRow.id,
+    question: q.question,
+    options: q.options,
+    correct_index: q.correctIndex,
+    explanation: q.explanation
+  }));
+
+  // 3. Insert questions
+  const { error: questionError } = await supabase
+    .from("questions")
+    .insert(questions);
+
+  if (questionError) throw questionError;
+
+  return quizRow.id;
 }
