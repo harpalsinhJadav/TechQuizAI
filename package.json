@@ -1,0 +1,11 @@
+{
+  "name": "techquizai",
+  "private": true,
+  "workspaces": [
+    "app"
+  ],
+  "scripts": {
+    "start:app": "cd app && npm start",
+    "start:web": "cd app && npm run web"
+  }
+}
