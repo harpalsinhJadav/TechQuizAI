@@ -5,79 +5,68 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
-// 🔥 Use ONLY primary model (no fallback for debugging)
 const PRIMARY_MODEL = "models/gemini-3.1-flash-lite-preview";
 const EMBEDDING_MODEL = "models/gemini-embedding-001";
 
-// Supabase
 const supabase = createClient(
   Deno.env.get("PROJECT_URL")!,
   Deno.env.get("SERVICE_ROLE_KEY")!
 );
 
-// ---------------- MAIN HANDLER ---------------- //
+// ---------------- RATE LIMIT ---------------- //
 
-serve(async (req) => {
-  try {
-    // CORS
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders() });
-    }
+const rateLimitMap = new Map();
 
-    if (!GEMINI_API_KEY) {
-      return jsonResponse({ error: "Missing GEMINI_API_KEY" }, 500);
-    }
+function rateLimit(ip: string) {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const maxRequests = 5;
 
-    const body = await req.json();
-    const { topic, content } = body;
+  const user = rateLimitMap.get(ip) || [];
+  const filtered = user.filter((t: number) => now - t < windowMs);
 
-    if (!topic && !content) {
-      return jsonResponse({ error: "Missing topic or content" }, 400);
-    }
-
-    const text = content || topic;
-
-    // 1️⃣ Chunking
-    const chunks = chunkText(text);
-
-    // 2️⃣ Save document
-    const { data: doc, error: docError } = await supabase
-      .from("documents")
-      .insert({ content: text })
-      .select()
-      .single();
-
-    if (docError) throw docError;
-
-    // 3️⃣ Store chunks with embeddings
-    await storeChunks(doc.id, chunks);
-
-    // 4️⃣ Retrieve relevant context
-    const context = await getRelevantChunks(text);
-
-    // 5️⃣ Generate quiz
-    const quiz = await generateQuiz(context);
-
-    // 6️⃣ Save quiz
-    const quizId = await saveQuiz(doc.id, quiz);
-
-    return jsonResponse({
-      success: true,
-      quizId,
-      total: quiz.length,
-      data: quiz
-    });
-
-  } catch (err) {
-    console.error("❌ ERROR:", err);
-    return jsonResponse(
-      { error: err.message || "Internal Server Error" },
-      500
-    );
+  if (filtered.length >= maxRequests) {
+    throw new Error("Too many requests. Try again later.");
   }
-});
 
-// ---------------- HELPERS ---------------- //
+  filtered.push(now);
+  rateLimitMap.set(ip, filtered);
+}
+
+// ---------------- VALIDATION ---------------- //
+
+function validateInput(body: any) {
+  const { topic, content } = body;
+
+  if (!topic && !content) {
+    throw new Error("Topic or content is required");
+  }
+
+  if (topic && typeof topic !== "string") {
+    throw new Error("Invalid topic");
+  }
+
+  if (content && typeof content !== "string") {
+    throw new Error("Invalid content");
+  }
+
+  const text = topic || content;
+
+  if (text.length > 5000) {
+    throw new Error("Input too large");
+  }
+
+  return text;
+}
+
+// ---------------- RESPONSE HELPERS ---------------- //
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*"
+  };
+}
 
 function jsonResponse(data: any, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -89,43 +78,40 @@ function jsonResponse(data: any, status = 200) {
   });
 }
 
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "*"
-  };
+function errorResponse(message: string, status = 400) {
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: message
+    }),
+    {
+      status,
+      headers: corsHeaders()
+    }
+  );
 }
 
-function extractJSON(text: string) {
-  // Remove markdown ```json ``` if present
-  text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+// ---------------- RETRY + TIMEOUT ---------------- //
 
-  // Try direct parse first
+async function fetchWithRetry(url: string, options: any, retries = 2) {
   try {
-    return JSON.parse(text);
-  } catch { }
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10000);
 
-  // Extract array JSON
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
 
-  if (start !== -1 && end !== -1) {
-    const json = text.slice(start, end + 1);
-    return JSON.parse(json);
+    if (!res.ok) throw new Error("API failed");
+
+    return res;
+  } catch (err) {
+    if (retries === 0) throw err;
+
+    await new Promise(r => setTimeout(r, 1000));
+    return fetchWithRetry(url, options, retries - 1);
   }
-
-  // Extract object JSON (fallback)
-  const objStart = text.indexOf("{");
-  const objEnd = text.lastIndexOf("}");
-
-  if (objStart !== -1 && objEnd !== -1) {
-    const json = text.slice(objStart, objEnd + 1);
-    return JSON.parse(json);
-  }
-
-  console.log("❌ RAW MODEL OUTPUT:", text);
-
-  throw new Error("Invalid JSON format");
 }
 
 // ---------------- CHUNKING ---------------- //
@@ -148,33 +134,21 @@ function chunkText(text: string) {
 async function getEmbedding(text: string) {
   const url = `https://generativelanguage.googleapis.com/v1beta/${EMBEDDING_MODEL}:embedContent?key=${GEMINI_API_KEY}`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      content: {
-        parts: [{ text }]
-      }
+      content: { parts: [{ text }] }
     })
   });
 
   const data = await res.json();
 
-  console.log("EMBEDDING RESPONSE:", JSON.stringify(data));
-
-  if (!res.ok) {
-    throw new Error(data?.error?.message || "Embedding failed");
+  if (!data?.embedding?.values) {
+    throw new Error("Embedding failed");
   }
 
-  const vector = data?.embedding?.values;
-
-  if (!vector) {
-    throw new Error("No embedding returned");
-  }
-
-  return vector;
+  return data.embedding.values;
 }
 
 // ---------------- STORE CHUNKS ---------------- //
@@ -203,56 +177,30 @@ async function getRelevantChunks(query: string, k = 5) {
 
   if (error) throw error;
 
-  return data.map((item: any) => item.content).join("\n");
+  return data.map((i: any) => i.content).join("\n");
 }
 
 // ---------------- QUIZ GENERATION ---------------- //
 
 async function generateQuiz(context: string) {
-  return await tryGenerate(context, PRIMARY_MODEL);
-}
-
-async function tryGenerate(context: string, model: string) {
   const prompt = `
-You are TechQuizAI.
-
-Generate 5 MCQs from the content below.
+Generate 5 MCQs.
 
 ${context}
 
-Rules:
-- 4 options
-- 1 correct answer
-- Medium difficulty
-- Return ONLY JSON
-
-Format:
-[
- {
-  "question": "",
-  "options": ["", "", "", ""],
-  "correctIndex": 0,
-  "explanation": ""
- }
-]
+Return ONLY JSON array.
 `;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/${PRIMARY_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      contents: [
-        {
-          parts: [{ text: prompt }]
-        }
-      ],
+      contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 2048,
         responseMimeType: "application/json"
       }
     })
@@ -260,47 +208,24 @@ Format:
 
   const data = await res.json();
 
-  console.log("🔥 PRIMARY MODEL RESPONSE:", JSON.stringify(data));
-
-  if (!res.ok) {
-    console.log("❌ PRIMARY MODEL ERROR:", JSON.stringify(data));
-    throw new Error(data?.error?.message || "Gemini API failed");
-  }
-
   const text =
     data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-  if (!text) {
-    throw new Error("Empty response from Gemini");
-  }
+  if (!text) throw new Error("Empty response");
 
-  try {
-    // return JSON.parse(text);
-    return extractJSON(text);
-  } catch {
-    const start = text.indexOf("[");
-    const end = text.lastIndexOf("]");
-
-    if (start === -1 || end === -1) {
-      console.log("❌ RAW TEXT:", text);
-      throw new Error("Invalid JSON format");
-    }
-
-    // return JSON.parse(text.slice(start, end + 1));
-    return extractJSON(text.slice(start, end + 1));
-  }
+  return JSON.parse(text);
 }
 
 // ---------------- SAVE QUIZ ---------------- //
 
 async function saveQuiz(documentId: string, quiz: any[]) {
-  const { data: quizRow, error: quizError } = await supabase
+  const { data: quizRow, error } = await supabase
     .from("quizzes")
     .insert({ document_id: documentId })
     .select()
     .single();
 
-  if (quizError) throw quizError;
+  if (error) throw error;
 
   const questions = quiz.map((q) => ({
     quiz_id: quizRow.id,
@@ -310,11 +235,59 @@ async function saveQuiz(documentId: string, quiz: any[]) {
     explanation: q.explanation
   }));
 
-  const { error: questionError } = await supabase
-    .from("questions")
-    .insert(questions);
-
-  if (questionError) throw questionError;
+  await supabase.from("questions").insert(questions);
 
   return quizRow.id;
 }
+
+// ---------------- MAIN ---------------- //
+
+serve(async (req) => {
+  try {
+    if (req.method === "OPTIONS") {
+      return new Response("ok", { headers: corsHeaders() });
+    }
+
+    if (!GEMINI_API_KEY) {
+      return errorResponse("Missing API key", 500);
+    }
+
+    const ip = req.headers.get("x-forwarded-for") || "unknown";
+    rateLimit(ip);
+
+    const body = await req.json();
+    const text = validateInput(body);
+
+    const chunks = chunkText(text);
+
+    const { data: doc } = await supabase
+      .from("documents")
+      .insert({ content: text })
+      .select()
+      .single();
+
+    await storeChunks(doc.id, chunks);
+
+    const context = await getRelevantChunks(text);
+
+    const quiz = await generateQuiz(context);
+
+    const quizId = await saveQuiz(doc.id, quiz);
+
+    return jsonResponse({
+      success: true,
+      quizId,
+      total: quiz.length,
+      data: quiz
+    });
+
+  } catch (err: any) {
+    console.log(JSON.stringify({
+      type: "ERROR",
+      message: err.message,
+      time: new Date().toISOString()
+    }));
+
+    return errorResponse(err.message || "Internal Server Error", 500);
+  }
+});
