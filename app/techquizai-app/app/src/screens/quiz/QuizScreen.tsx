@@ -5,6 +5,10 @@ import QuestionCard from "../../components/quiz/QuestionCard";
 import ProgressBar from "../../components/common/ProgressBar";
 import PrimaryButton from "../../components/common/PrimaryButton";
 import Loader from "../../components/common/Loader";
+import Animated, {
+  FadeInRight,
+  FadeOutLeft
+} from "react-native-reanimated";
 
 export default function QuizScreen({ route, navigation }: any) {
   const { quizId } = route.params;
@@ -53,13 +57,24 @@ export default function QuizScreen({ route, navigation }: any) {
         Question {current + 1}/{questions.length}
       </Text>
 
-      <QuestionCard
-        question={q}
-        selected={answers[current]}
-        onSelect={handleSelect}
+      <Animated.View
+        key={current}
+        entering={FadeInRight.duration(300)}
+        exiting={FadeOutLeft.duration(200)}
+      >
+        <QuestionCard
+          question={q}
+          selected={answers[current]}
+          onSelect={handleSelect}
+        />
+      </Animated.View>
+
+      <PrimaryButton
+        title="Next"
+        onPress={handleNext}
+        disabled={answers[current] === undefined}
       />
 
-      <PrimaryButton title="Next" onPress={handleNext} />
     </View>
   );
 }
