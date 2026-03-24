@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
+import { useTheme } from "../../theme/ThemeProvider";
 import { quizService } from "../../services/quizService";
 import QuestionCard from "../../components/quiz/QuestionCard";
 import ProgressBar from "../../components/common/ProgressBar";
@@ -12,6 +13,7 @@ import Animated, {
 
 export default function QuizScreen({ route, navigation }: any) {
   const { quizId } = route.params;
+  const { colors } = useTheme();
 
   const [questions, setQuestions] = useState<any[]>([]);
   const [current, setCurrent] = useState(0);
@@ -23,9 +25,15 @@ export default function QuizScreen({ route, navigation }: any) {
   }, []);
 
   const loadQuiz = async () => {
-    const res = await quizService.getQuiz(quizId);
-    setQuestions(res.data.data);
-    setLoading(false);
+    try {
+      const res = await quizService.getQuiz(quizId);
+      // Safety check for response structure
+      setQuestions(res?.data?.data || res?.data || []);
+    } catch (error) {
+      console.error("Failed to load quiz:", error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleNext = () => {
@@ -47,13 +55,21 @@ export default function QuizScreen({ route, navigation }: any) {
 
   if (loading) return <Loader />;
 
+  if (!questions || questions.length === 0) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background }}>
+        <Text style={{ color: colors.text }}>No questions found. Please try again.</Text>
+      </View>
+    );
+  }
+
   const q = questions[current];
 
   return (
-    <View style={{ padding: 20 }}>
+    <View style={{ padding: 20, flex: 1, backgroundColor: colors.background }}>
       <ProgressBar progress={(current + 1) / questions.length} />
 
-      <Text style={{ marginBottom: 10 }}>
+      <Text style={{ marginBottom: 10, color: colors.textSecondary }}>
         Question {current + 1}/{questions.length}
       </Text>
 

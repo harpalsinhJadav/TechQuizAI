@@ -188,8 +188,16 @@ Generate 5 MCQs.
 
 ${context}
 
-Return ONLY JSON array.
-`;
+Return ONLY a JSON array of objects with this EXACT format:
+    [
+      {
+        "question": "string",
+        "options": ["string", "string", "string", "string"],
+        "correctIndex": number (0-3),
+        "explanation": "string explaining why the answer is correct"
+      }
+    ]
+    `;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/${PRIMARY_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 

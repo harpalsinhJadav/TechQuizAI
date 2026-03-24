@@ -1,5 +1,5 @@
 import { View, Text } from "react-native";
-import { useTheme } from "../../theme/useTheme";
+import { useTheme } from "../../theme/ThemeProvider";
 import Animated, {
   FadeInDown
 } from "react-native-reanimated";
@@ -15,7 +15,7 @@ export default function ResultScreen({ route }: any) {
   });
 
   return (
-    <View style={{ padding: 20 }}>
+    <View style={{ padding: 20, backgroundColor: colors.background, flex: 1 }}>
       <Animated.Text
         entering={FadeInDown.duration(500)}
         style={{ fontSize: 24, color: colors.primary }}
@@ -28,7 +28,7 @@ export default function ResultScreen({ route }: any) {
 
         return (
           <View key={i} style={{ marginTop: 16 }}>
-            <Text>{q.question}</Text>
+            <Text style={{ color: colors.text }}>{q.question}</Text>
 
             <Text style={{ color: correct ? "green" : "red" }}>
               Your: {q.options[answers[i]]}
@@ -40,7 +40,7 @@ export default function ResultScreen({ route }: any) {
               </Text>
             )}
 
-            <Text>{q.explanation}</Text>
+            <Text style={{ color: colors.textSecondary }}>{q.explanation}</Text>
           </View>
         );
       })}

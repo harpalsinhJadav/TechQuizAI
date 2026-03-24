@@ -13,7 +13,7 @@ export type RootStackParamList = {
     Signup: undefined;
     ForgotPassword: undefined;
     Main: undefined;
-    Quiz: { categoryId: string };
+    Quiz: { categoryId?: string; quizId?: string };
     Result: { score: number, total: number };
 };
 

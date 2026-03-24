@@ -1,3 +1,2 @@
-import { theme } from "./theme";
-
-export const useTheme = () => theme;
+// Deprecated: Use useTheme from ThemeProvider.tsx instead
+export {};

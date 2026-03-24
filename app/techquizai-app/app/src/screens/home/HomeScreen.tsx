@@ -1,4 +1,8 @@
 import React from 'react';
+import { useState } from "react";
+import { TextInput, Alert } from "react-native";
+import PrimaryButton from "../../components/common/PrimaryButton";
+import { quizService } from "../../services/quizService";
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, SafeAreaView } from 'react-native';
 import { useTheme } from '../../theme/ThemeProvider';
 import { useNavigation } from '@react-navigation/native';
@@ -16,12 +20,40 @@ const categories = [
 ];
 
 export default function HomeScreen() {
+
+
+  const [topic, setTopic] = useState("");
+  const [loading, setLoading] = useState(false);
   const { colors, spacing, scaling } = useTheme();
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const { t } = useTranslation();
 
   const handleCategoryPress = (category: typeof categories[0]) => {
     navigation.navigate('Quiz', { categoryId: category.id });
+  };
+
+  const handleStart = async () => {
+    try {
+      if (!topic.trim()) {
+        return Alert.alert("Enter topic");
+      }
+
+      setLoading(true);
+
+      const res = await quizService.generateQuiz(topic);
+
+      navigation.navigate("Quiz", {
+        quizId: res.quizId
+      });
+
+    } catch (err: any) {
+      Alert.alert(
+        "Error",
+        err?.response?.data?.error || "Failed to generate quiz"
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -38,7 +70,7 @@ export default function HomeScreen() {
           <TouchableOpacity
             style={[
               styles.card,
-              { 
+              {
                 backgroundColor: item.color,
                 margin: spacing.s / 2,
                 borderRadius: scaling.moderate(12),
@@ -51,6 +83,22 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
       />
+
+
+
+      <TextInput
+        placeholder="Enter topic"
+        value={topic}
+        onChangeText={setTopic}
+        style={{ borderWidth: 1, marginBottom: 10 }}
+      />
+
+      <PrimaryButton
+        title={loading ? "Loading..." : "Start Quiz"}
+        onPress={handleStart}
+      />
+
+
     </SafeAreaView>
   );
 }

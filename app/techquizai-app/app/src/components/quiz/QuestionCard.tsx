@@ -1,5 +1,5 @@
 import { View, Text, TouchableOpacity } from "react-native";
-import { useTheme } from "../../theme/useTheme";
+import { useTheme } from "../../theme/ThemeProvider";
 import Animated, {
     useSharedValue,
     useAnimatedStyle,

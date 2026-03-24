@@ -1,9 +1,13 @@
 import { apiClient } from "./apiClient";
 
 export const quizService = {
-    generateQuiz: (topic: string) =>
-        apiClient.post("/functions/v1/generate-quiz", { topic }),
+    generateQuiz: async (topic: string) => {
+        const res = await apiClient.post("/generate-quiz", { topic });
+        return res.data;
+    },
 
-    getQuiz: (quizId: string) =>
-        apiClient.post("/functions/v1/start-quiz", { quizId })
+    getQuiz: async (quizId: string) => {
+        const res = await apiClient.post("/start-quiz", { quizId });
+        return res.data;
+    }
 };
