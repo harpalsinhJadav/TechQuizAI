@@ -94,21 +94,33 @@ function errorResponse(message: string, status = 400) {
 // ---------------- RETRY + TIMEOUT ---------------- //
 
 async function fetchWithRetry(url: string, options: any, retries = 2) {
+  const timeout = 60000; // 60 seconds
   try {
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 10000);
+    const id = setTimeout(() => controller.abort(), timeout);
 
     const res = await fetch(url, {
       ...options,
       signal: controller.signal
     });
 
-    if (!res.ok) throw new Error("API failed");
+    clearTimeout(id);
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`API Error (${res.status}): ${errorText}`);
+      throw new Error(`API failed: ${res.status}`);
+    }
 
     return res;
-  } catch (err) {
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      console.error(`Fetch timeout after ${timeout}ms: ${url}`);
+    }
+
     if (retries === 0) throw err;
 
+    console.log(`Retrying fetch (${retries} retries left)...`);
     await new Promise(r => setTimeout(r, 1000));
     return fetchWithRetry(url, options, retries - 1);
   }
@@ -145,7 +157,7 @@ async function getEmbedding(text: string) {
   const data = await res.json();
 
   if (!data?.embedding?.values) {
-    throw new Error("Embedding failed");
+    throw new Error("Embedding failed: Missing values");
   }
 
   return data.embedding.values;
@@ -184,20 +196,25 @@ async function getRelevantChunks(query: string, k = 5) {
 
 async function generateQuiz(context: string) {
   const prompt = `
-Generate 5 MCQs.
+    Task: Create a 5-question Multiple Choice Quiz.
+    Source Material: ${context}
 
-${context}
+    Instructions:
+    1. Generate exactly 5 MCQs strictly based on the Source Material provided above. 
+    2. If the Source Material is a specific topic (e.g., "React Native"), do not include questions about unrelated topics (e.g., "Databases").
+    3. Each question must have 4 options and exactly one clearly correct answer.
+    4. The "explanation" should briefly justify why the answer is correct based on the context.
 
-Return ONLY a JSON array of objects with this EXACT format:
+    Output Format (Return ONLY a raw JSON array):
     [
       {
         "question": "string",
         "options": ["string", "string", "string", "string"],
         "correctIndex": number (0-3),
-        "explanation": "string explaining why the answer is correct"
+      "explanation": "string"
       }
     ]
-    `;
+  `;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/${PRIMARY_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -264,15 +281,20 @@ serve(async (req) => {
     rateLimit(ip);
 
     const body = await req.json();
+    console.log(`Processing request for topic/content: ${body.topic || 'Custom Content'}`);
+
     const text = validateInput(body);
 
     const chunks = chunkText(text);
 
-    const { data: doc } = await supabase
+    console.log("Creating document...");
+    const { data: doc, error: docError } = await supabase
       .from("documents")
       .insert({ content: text })
       .select()
       .single();
+
+    if (docError) throw docError;
 
     await storeChunks(doc.id, chunks);
 
@@ -282,6 +304,8 @@ serve(async (req) => {
 
     const quizId = await saveQuiz(doc.id, quiz);
 
+    console.log("Quiz generation completed successfully!");
+
     return jsonResponse({
       success: true,
       quizId,
@@ -290,6 +314,7 @@ serve(async (req) => {
     });
 
   } catch (err: any) {
+    console.error(`Error in generate-quiz: ${err.message}`);
     console.log(JSON.stringify({
       type: "ERROR",
       message: err.message,
