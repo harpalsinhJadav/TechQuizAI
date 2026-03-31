@@ -3,3 +3,5 @@ node_modules
 .supabase
 dist
 .expo
+Figma
+.DS_Store
